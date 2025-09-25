@@ -24,7 +24,13 @@ from common.metadata import MediaItem, add_media_item_to_firestore # Updated imp
 from config.default import Default
 from config.imagen_models import IMAGEN_MODELS, get_imagen_model_config
 from models.gemini import generate_compliment, rewrite_prompt_with_gemini
-from models.image_models import generate_images_from_prompt
+from providers import (
+    ImageOptions as ProviderImageOptions,
+    ProviderCapability,
+    ProviderError,
+    Prompt as ProviderPrompt,
+    registry as provider_registry,
+)
 from state.state import AppState
 from state.imagen_state import PageState
 from components.styles import _BOX_STYLE # Import the style
@@ -36,6 +42,11 @@ app_config_instance = Default()
 def generation_controls():
     """Image generation controls, driven by the selected model's configuration."""
     state = me.state(PageState)
+    provider_metas = provider_registry.list_providers(ProviderCapability.IMAGE)
+    provider_ids = {meta.provider_id for meta in provider_metas}
+    if provider_metas and state.image_provider_id not in provider_ids:
+        state.image_provider_id = provider_metas[0].provider_id
+
     selected_config = get_imagen_model_config(state.image_model_name)
 
     if not selected_config:
@@ -43,6 +54,18 @@ def generation_controls():
         return
 
     with me.box(style=_BOX_STYLE):
+        if provider_metas:
+            me.select(
+                label="Image provider",
+                options=[
+                    me.SelectOption(label=meta.display_name, value=meta.provider_id)
+                    for meta in provider_metas
+                ],
+                on_selection_change=on_selection_change_image_provider,
+                value=state.image_provider_id,
+            )
+            me.divider()
+
         with me.box(style=me.Style(display="flex", justify_content="end")):
             me.select(
                 label="Imagen version",
@@ -125,11 +148,17 @@ def on_selection_change_image_model(e: me.SelectSelectionChangeEvent):
     """Handles selection change for the image model."""
     state = me.state(PageState)
     state.image_model_name = e.value
-    
+
     new_config = get_imagen_model_config(e.value)
     if new_config:
         state.image_aspect_ratio = new_config.supported_aspect_ratios[0]
         state.imagen_image_count = new_config.default_samples
+
+
+def on_selection_change_image_provider(e: me.SelectSelectionChangeEvent):
+    """Handles provider selection change."""
+    state = me.state(PageState)
+    state.image_provider_id = e.value
 
 
 @track_click(element_id="imagen_generate_button")
@@ -164,14 +193,32 @@ def on_click_generate_images(e: me.ClickEvent):
     start_time = time.time()
 
     try:
-        new_image_uris = generate_images_from_prompt(
-            input_txt=current_prompt,
-            current_model_name=state.image_model_name,
-            image_count=int(state.imagen_image_count),
-            negative_prompt=state.image_negative_prompt_input,
-            prompt_modifiers_segment="",  # This is now handled by the prompt itself
-            aspect_ratio=state.image_aspect_ratio,
+        provider_id = state.image_provider_id or "google-vertex"
+        provider_registry.ensure_credentials(provider_id)
+        image_service = provider_registry.get_adapter(
+            provider_id, ProviderCapability.IMAGE
         )
+
+        options = ProviderImageOptions(
+            aspect_ratio=state.image_aspect_ratio,
+            negative_prompt=state.image_negative_prompt_input or None,
+            count=int(state.imagen_image_count),
+        )
+        options.extra["model_name"] = state.image_model_name
+
+        prompt_payload = ProviderPrompt(text=current_prompt)
+
+        with track_model_call(
+            model_name=state.image_model_name,
+            provider=provider_id,
+            aspect_ratio=state.image_aspect_ratio,
+            image_count=int(state.imagen_image_count),
+        ):
+            result = image_service.generate_images(prompt_payload, options=options)
+
+        new_image_uris = [
+            artifact.uri for artifact in result.artifacts if artifact.uri
+        ]
         state.image_output = new_image_uris
         state.is_loading = False
 
@@ -180,9 +227,12 @@ def on_click_generate_images(e: me.ClickEvent):
             state.image_commentary = generate_compliment(
                 current_prompt, state.image_output
             )
-
         end_time = time.time()
-        execution_time = end_time - start_time
+        execution_time = (
+            (result.telemetry.latency_ms / 1000)
+            if getattr(result, "telemetry", None) and result.telemetry.latency_ms
+            else end_time - start_time
+        )
 
         # Determine original and rewritten prompts
         # current_prompt is the one used for generation (could be original or rewritten)
@@ -236,6 +286,30 @@ def on_click_generate_images(e: me.ClickEvent):
         )
         add_media_item_to_firestore(item)
 
+    except (ProviderError, NotImplementedError, KeyError, RuntimeError) as ex:
+        state.error_message = f"Image generation failed: {str(ex)}"
+        state.dialog_message = state.error_message
+        state.show_dialog = True
+        state.image_output = []
+        state.is_loading = False
+        item_with_error = MediaItem(
+            user_email=app_state.user_email or "local_user@example.com",
+            timestamp=datetime.datetime.now(datetime.timezone.utc),
+            prompt=current_prompt,
+            model=state.image_model_name,
+            mime_type="image/png",
+            generation_time=time.time() - start_time,
+            error_message=state.error_message,
+            aspect=state.image_aspect_ratio,
+            num_images=int(state.imagen_image_count),
+            seed=int(state.imagen_seed),
+        )
+        try:
+            add_media_item_to_firestore(item_with_error)
+        except Exception as meta_err:
+            print(f"CRITICAL: Failed to store provider error metadata: {meta_err}")
+        yield
+        return
     except Exception as ex:
         # If error happens here, we should log it to MediaItem as well
         state.error_message = f"An unexpected error occurred: {str(ex)}"
@@ -346,4 +420,3 @@ def on_click_rewrite_prompt(e: me.ClickEvent):
     finally:
         state.is_loading = False  # Hide spinner
         yield
-
