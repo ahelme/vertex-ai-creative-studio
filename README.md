@@ -1,6 +1,6 @@
-# GenMedia Creative Studio | Vertex AI
+# GenMedia Creative Studio | 
 
-> ###### _This is not an officially supported Google product. This project is not eligible for the [Google Open Source Software Vulnerability Rewards Program](https://bughunters.google.com/open-source-security). This project is intended for demonstration purposes only. It is not intended for use in a production environment._
+
 
 
 ![GenMedia Creative Studio v.next](https://github.com/user-attachments/assets/da5ad223-aa6e-413c-b36e-5d63e5d5b758)
@@ -43,7 +43,7 @@
 
 # GenMedia Creative Studio
 
-GenMedia Creative Studio is a web application showcasing Google Cloud's generative media - Veo, Lyria, Chirp, Gemini 2.5 Flash Image Generation (nano-banana), and Gemini TTS along with custom workflows and techniques for creative exploration and inspiration. We're looking forward to see what you create!
+GenMedia Creative Studio is a web application showcasing generative media - Google's Veo, Lyria, Chirp, Gemini 2.5 Flash Image, and Gemini TTS along with models and inference via Replicate, Fal.ai and Hugging Face, with custom workflows and techniques for creative exploration and inspiration. 
 
 Current featureset
 * Image: Imagen 3, Imagen 4, Virtual Try-On, Gemini 2.5 Flash Image Generation
